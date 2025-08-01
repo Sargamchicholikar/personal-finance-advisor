@@ -1,0 +1,172 @@
+/* Enhanced Charts Component Styles */
+.chartsContainer {
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 15px;
+  padding: 2rem;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+  backdrop-filter: blur(10px);
+  margin-bottom: 2rem;
+}
+
+.chartTitle {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #2c3e50;
+  margin-bottom: 1.5rem;
+  text-align: center;
+}
+
+.barChart {
+  display: flex;
+  justify-content: space-around;
+  align-items: flex-end;
+  height: 300px;
+  padding: 2rem;
+  background: #f8f9fa;
+  border-radius: 12px;
+  margin-bottom: 2rem;
+}
+
+.barGroup {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1;
+  max-width: 120px;
+}
+
+.bar {
+  width: 60px;
+  height: 200px;
+  background: #e9ecef;
+  border-radius: 8px 8px 0 0;
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+}
+
+.barFill {
+  width: 100%;
+  border-radius: 8px 8px 0 0;
+  transition: height 0.8s ease-in-out;
+  min-height: 4px;
+}
+
+.incomeBar {
+  background: linear-gradient(180deg, #28a745, #20c997);
+}
+
+.expenseBar {
+  background: linear-gradient(180deg, #dc3545, #fd7e83);
+}
+
+.savingsBar {
+  background: linear-gradient(180deg, #667eea, #764ba2);
+}
+
+.barLabel {
+  font-weight: 600;
+  color: #495057;
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+.barValue {
+  font-weight: 700;
+  color: #2c3e50;
+  font-size: 1.1rem;
+  text-align: center;
+}
+
+.trendSection {
+  background: #f8f9fa;
+  padding: 1.5rem;
+  border-radius: 12px;
+  border-left: 4px solid #667eea;
+}
+
+.trendTitle {
+  font-size: 1.2rem;
+  font-weight: 600;
+  color: #2c3e50;
+  margin-bottom: 1rem;
+}
+
+.trendGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+}
+
+.trendItem {
+  background: white;
+  padding: 1rem;
+  border-radius: 8px;
+  border: 1px solid #e9ecef;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.trendLabel {
+  font-weight: 500;
+  color: #495057;
+}
+
+.trendIndicator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.trendArrow {
+  font-size: 1.2rem;
+  font-weight: bold;
+}
+
+.trendUp {
+  color: #28a745;
+}
+
+.trendDown {
+  color: #dc3545;
+}
+
+.trendStable {
+  color: #6c757d;
+}
+
+.trendText {
+  font-weight: 500;
+  font-size: 0.9rem;
+}
+
+.chartLegend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 15px;
+  margin-top: 15px;
+}
+
+.legendItem {
+  display: flex;
+  align-items: center;
+  font-size: 14px;
+}
+
+.legendColor {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  margin-right: 6px;
+}
+
+.chartError {
+  color: #d32f2f;
+  text-align: center;
+  padding: 20px;
+  background-color: #ffebee;
+  border-radius: 4px;
+}
