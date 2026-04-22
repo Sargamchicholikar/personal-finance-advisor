@@ -19,6 +19,14 @@ import requests
 from scipy.optimize import minimize
 import google.generativeai as genai
 import warnings
+from backend.smart_finance_engine import SmartFinanceEngine
+from frontend.pages.ai_chat_page import render_ai_chat as render_ai_chat_page
+from frontend.pages.dashboard_page import render_dashboard as render_dashboard_page
+from frontend.pages.gamification_page import render_gamification as render_gamification_page
+from frontend.pages.layout import render_header as render_header_page, render_sidebar as render_sidebar_page
+from frontend.pages.portfolio_page import render_portfolio as render_portfolio_page
+from frontend.pages.settings_page import render_settings as render_settings_page
+from frontend.pages.smart_features_page import render_smart_features as render_smart_features_page
 warnings.filterwarnings('ignore')
 
 # ======================== Configuration ========================
@@ -378,8 +386,37 @@ class GeminiFinanceAdvisor:
     
     def __init__(self, api_key: str):
         genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel('gemini-2.0-flash-exp')
+        self.model_name = self._select_supported_model_name()
+        self.model = genai.GenerativeModel(self.model_name)
         self.conversation_history = []
+
+    def _select_supported_model_name(self) -> str:
+        """Pick a model that supports generateContent for current account/version."""
+        preferred = [
+            "gemini-1.5-flash",
+            "gemini-1.5-pro",
+            "gemini-1.5-flash-latest",
+            "gemini-1.5-pro-latest",
+        ]
+        try:
+            available = []
+            for m in genai.list_models():
+                if "generateContent" in getattr(m, "supported_generation_methods", []):
+                    name = str(getattr(m, "name", ""))
+                    if name.startswith("models/"):
+                        name = name.split("/", 1)[1]
+                    if name:
+                        available.append(name)
+            for candidate in preferred:
+                if candidate in available:
+                    return candidate
+            if available:
+                return available[0]
+        except Exception:
+            pass
+
+        # Last resort fallback
+        return "gemini-1.5-flash"
         
     def get_indian_context_prompt(self, user: User) -> str:
         """Create India-specific context for the LLM"""
@@ -460,11 +497,27 @@ class GeminiFinanceAdvisor:
             """
             
             response = self.model.generate_content(prompt)
-            self.conversation_history.append({"query": query, "response": response.text})
-            return response.text
+            text = getattr(response, "text", None)
+            if not text:
+                text = "I could not generate a full response. Please try again with a shorter query."
+            self.conversation_history.append({"query": query, "response": text})
+            return text
             
         except Exception as e:
-            return f"Error getting advice: {str(e)}. Please check your API key."
+            err = str(e).lower()
+            if "429" in err or "quota" in err or "rate limit" in err:
+                return (
+                    "Gemini API quota is exhausted for your current key/project.\n\n"
+                    "Quick fix:\n"
+                    "1) Open Google AI Studio billing/quota page and enable a plan.\n"
+                    "2) Or create a new API key under a project with available quota.\n"
+                    "3) Wait for cooldown and retry.\n\n"
+                    f"Meanwhile, basic guidance from your profile:\n"
+                    f"- Monthly income: ₹{user.income:,.0f}\n"
+                    f"- Monthly expenses: ₹{user.expenses:,.0f}\n"
+                    f"- Savings target: at least 20% of income."
+                )
+            return f"Error getting advice: {str(e)}. Please check API key/model access."
     
     def analyze_tax_savings(self, user: User, income_details: Dict) -> str:
         """Provide tax optimization strategies"""
@@ -491,6 +544,122 @@ class GeminiFinanceAdvisor:
             return response.text
         except Exception as e:
             return f"Error analyzing tax: {str(e)}"
+
+
+class OpenRouterFinanceAdvisor:
+    """LLM advisor using OpenRouter (OpenAI-compatible API)."""
+
+    def __init__(self, api_key: str, model: str = "meta-llama/llama-3.1-8b-instruct:free"):
+        self.api_key = api_key
+        self.model_name = model
+        self.base_url = "https://openrouter.ai/api/v1/chat/completions"
+        self.conversation_history = []
+
+    def _chat(self, system_prompt: str, user_prompt: str) -> str:
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self.model_name,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 0.3,
+        }
+        resp = requests.post(self.base_url, headers=headers, json=payload, timeout=45)
+        if resp.status_code >= 400:
+            raise ValueError(f"{resp.status_code} {resp.text}")
+        data = resp.json()
+        choices = data.get("choices", [])
+        if not choices:
+            return "No response received from OpenRouter model."
+        return choices[0]["message"]["content"]
+
+    def get_advice(self, query: str, user: User, portfolio: Optional[Portfolio] = None) -> str:
+        try:
+            system_prompt = (
+                "You are an Indian personal finance advisor. Give practical, responsible, "
+                "actionable advice with clear monthly amounts, timeline, and risk notes."
+            )
+            context = (
+                f"User profile: age={user.age}, monthly_income={user.income}, monthly_expenses={user.expenses}, "
+                f"risk_profile={user.risk_profile}, goals={', '.join(user.financial_goals)}. "
+            )
+            if portfolio:
+                context += f"Portfolio_total={portfolio.total_value}. "
+            answer = self._chat(system_prompt, f"{context}\n\nUser query: {query}")
+            self.conversation_history.append({"query": query, "response": answer})
+            return answer
+        except Exception as e:
+            return f"Error getting advice: {e}. Please check OpenRouter key/model."
+
+
+class OfflineFinanceAdvisor:
+    """No-API fallback advisor for students/free usage."""
+
+    def __init__(self):
+        self.conversation_history = []
+        self.knowledge_base = {
+            "sip": "SIP (Systematic Investment Plan) means investing a fixed amount every month in a mutual fund. It helps with discipline and reduces timing risk.",
+            "mutual fund": "A mutual fund pools money from many investors and invests in stocks/bonds. You get diversification and professional management.",
+            "inflation": "Inflation means prices rise over time, so money buys less. Your investments should grow faster than inflation to protect purchasing power.",
+            "emergency fund": "Emergency fund is money kept for unexpected events like medical/job loss. Target 6 months of expenses in safe, liquid options.",
+            "fd": "FD (Fixed Deposit) gives fixed returns with lower risk. Good for safety goals, but long-term wealth growth is usually lower than equity.",
+            "diversification": "Diversification means spreading money across asset types (equity, debt, gold, cash) to reduce risk from one bad investment.",
+            "credit score": "Credit score reflects your loan repayment behavior. Pay EMIs/credit card on time and keep credit utilization low (ideally below 30%).",
+            "ppf": "PPF is a long-term government-backed savings option with tax benefits and low risk. Useful for stable debt allocation.",
+            "nps": "NPS is a retirement-focused investment with tax benefits. It has equity + debt exposure and is useful for long-term retirement corpus.",
+            "term insurance": "Term insurance gives high life cover at low premium and protects family income. It is protection, not investment.",
+            "health insurance": "Health insurance protects savings from hospital expenses. Even young people should have basic coverage.",
+            "budget": "A budget is a plan for income allocation. A simple rule: needs, wants, savings/investments. Track monthly to improve control.",
+        }
+
+    def _knowledge_response(self, query: str) -> Optional[str]:
+        q = query.lower()
+        for keyword, explanation in self.knowledge_base.items():
+            if keyword in q:
+                return f"Basic concept:\n{explanation}\n\nIf you want, I can also explain this with a simple real-life example."
+        if any(k in q for k in ["basic", "beginner", "learn finance", "financial knowledge"]):
+            return (
+                "Beginner financial roadmap:\n"
+                "1) Track income/expenses and follow a budget.\n"
+                "2) Build emergency fund (6 months expenses).\n"
+                "3) Buy health + term insurance.\n"
+                "4) Start SIP for long-term goals.\n"
+                "5) Review and increase savings every 3-6 months."
+            )
+        return None
+
+    def get_advice(self, query: str, user: User, portfolio: Optional[Portfolio] = None) -> str:
+        knowledge = self._knowledge_response(query)
+        if knowledge:
+            self.conversation_history.append({"query": query, "response": knowledge})
+            return knowledge
+
+        savings = max(0, user.income - user.expenses)
+        savings_rate = (savings / user.income * 100) if user.income > 0 else 0
+        emergency_target = user.expenses * 6
+        current_emergency = 0.0
+        if portfolio:
+            current_emergency = portfolio.cash + portfolio.fixed_deposits
+        emergency_gap = max(0.0, emergency_target - current_emergency)
+        invest_pct = 50 if "aggressive" in user.risk_profile.lower() else 35 if "moderate" in user.risk_profile.lower() else 20
+        debt_pct = 100 - invest_pct
+
+        advice = (
+            f"Based on your profile, here is a free rule-based plan:\n\n"
+            f"1) Savings: You currently save about {savings_rate:.1f}% (₹{savings:,.0f}/month). "
+            f"Target at least 20%.\n"
+            f"2) Emergency fund: Target ₹{emergency_target:,.0f}. "
+            f"Current estimate ₹{current_emergency:,.0f}. Gap ₹{emergency_gap:,.0f}.\n"
+            f"3) Investing split ({user.risk_profile}): ~{invest_pct}% equity and ~{debt_pct}% safer assets.\n"
+            f"4) Action this month: automate savings on salary day, then invest remaining surplus via SIP.\n\n"
+            f"Your question: {query}"
+        )
+        self.conversation_history.append({"query": query, "response": advice})
+        return advice
 
 # ======================== Gamification System ========================
 class GamificationEngine:
@@ -1037,6 +1206,17 @@ class IndianFinanceAdvisorApp:
         )
         self.init_session_state()
         self.apply_custom_css()
+        self.Config = Config
+        self.User = User
+        self.Portfolio = Portfolio
+        self.MarketDataManager = MarketDataManager
+        self.GamificationEngine = GamificationEngine
+        self.RiskProfiler = RiskProfiler
+        self.PortfolioOptimizer = PortfolioOptimizer
+        self.GeminiFinanceAdvisor = GeminiFinanceAdvisor
+        self.OpenRouterFinanceAdvisor = OpenRouterFinanceAdvisor
+        self.OfflineFinanceAdvisor = OfflineFinanceAdvisor
+        self.SmartFinanceEngine = SmartFinanceEngine
     
     def init_session_state(self):
         """Initialize session state"""
@@ -1052,6 +1232,14 @@ class IndianFinanceAdvisorApp:
             st.session_state.current_page = "Dashboard"
         if 'api_key' not in st.session_state:
             st.session_state.api_key = ""
+        if 'llm_provider' not in st.session_state:
+            st.session_state.llm_provider = "Offline (No API Key)"
+        if 'llm_model' not in st.session_state:
+            st.session_state.llm_model = "meta-llama/llama-3.1-8b-instruct:free"
+        if 'expense_analysis' not in st.session_state:
+            st.session_state.expense_analysis = None
+        if 'chat_memory' not in st.session_state:
+            st.session_state.chat_memory = {}
     
     def apply_custom_css(self):
         """Apply custom CSS styling"""
@@ -1108,994 +1296,24 @@ class IndianFinanceAdvisorApp:
         </style>
         """, unsafe_allow_html=True)
     
-    def render_header(self):
-        """Render application header"""
-        col1, col2, col3 = st.columns([2, 3, 2])
-        
-        with col1:
-            st.markdown("# 💰 WealthWise India")
-            st.markdown("*Your AI-Powered Financial Advisor*")
-        
-        with col2:
-            if st.session_state.user:
-                level, emoji, progress = GamificationEngine().get_wealth_level(st.session_state.user.wealth_score)
-                st.metric(
-                    "Wealth Score",
-                    f"{st.session_state.user.wealth_score} pts",
-                    f"{emoji} {level}"
-                )
-        
-        with col3:
-            market = MarketDataManager.get_indian_market_sentiment()
-            st.metric(
-                "Market Sentiment",
-                market['sentiment'],
-                f"{market.get('avg_change', 0):.2f}%",
-                delta_color="normal" if market.get('avg_change', 0) >= 0 else "inverse"
-            )
-    
-    def render_sidebar(self):
-        """Render sidebar navigation"""
-        with st.sidebar:
-            st.markdown("## 🚀 Navigation")
-            
-            pages = [
-                ("🏠 Dashboard", "Dashboard"),
-                ("💬 AI Advisor Chat", "AI Chat"),
-                ("📊 Portfolio Optimizer", "Portfolio"),
-                ("🎮 Achievements & Rewards", "Gamification"),
-                ("⚙️ Settings", "Settings")
-            ]
-            
-            for label, page in pages:
-                if st.button(label, use_container_width=True, key=f"nav_{page}"):
-                    st.session_state.current_page = page
-            
-            st.markdown("---")
-            
-            # Daily Tip
-            st.markdown("### 💡 Daily Tip")
-            tip = GamificationEngine().get_daily_tip()
-            st.info(tip)
-            
-            st.markdown("---")
-            
-            # Quick Stats
-            if st.session_state.portfolio:
-                st.markdown("### 📊 Quick Stats")
-                portfolio = st.session_state.portfolio
-                st.metric("Total Portfolio", f"₹{portfolio.total_value:,.0f}")
-                
-                # Asset distribution
-                st.markdown("**Asset Distribution:**")
-                assets = {
-                    "Equity": sum(portfolio.stocks.values()) + sum(portfolio.mutual_funds.values()) + portfolio.elss,
-                    "Debt": portfolio.fixed_deposits + portfolio.ppf + portfolio.nps,
-                    "Gold": portfolio.gold,
-                    "Others": portfolio.real_estate + portfolio.crypto + portfolio.cash
-                }
-                for asset, value in assets.items():
-                    if value > 0:
-                        pct = (value / portfolio.total_value) * 100
-                        st.progress(pct / 100)
-                        st.caption(f"{asset}: {pct:.1f}%")
-    
-    def render_dashboard(self):
-        """Render main dashboard"""
-        st.markdown("## 📊 Financial Dashboard")
-        
-        if not st.session_state.user:
-            st.warning("Please complete your profile in Settings first!")
-            return
-        
-        user = st.session_state.user
-        portfolio = st.session_state.portfolio
-        
-        # Key Metrics
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            savings_rate = ((user.income - user.expenses) / user.income) * 100
-            st.metric(
-                "Savings Rate",
-                f"{savings_rate:.1f}%",
-                "Good" if savings_rate > 20 else "Improve"
-            )
-        
-        with col2:
-            if portfolio:
-                monthly_investment = portfolio.total_value / 12  # Simplified
-                investment_rate = (monthly_investment / user.income) * 100
-                st.metric(
-                    "Investment Rate",
-                    f"{investment_rate:.1f}%",
-                    "Excellent" if investment_rate > 30 else "Good"
-                )
-            else:
-                st.metric("Investment Rate", "0%", "Start Investing")
-        
-        with col3:
-            emergency_months = 0
-            if portfolio:
-                emergency_funds = portfolio.cash + portfolio.fixed_deposits
-                emergency_months = emergency_funds / user.expenses if user.expenses > 0 else 0
-            st.metric(
-                "Emergency Fund",
-                f"{emergency_months:.1f} months",
-                "Adequate" if emergency_months >= 6 else "Build More"
-            )
-        
-        with col4:
-            debt_ratio = 0  # Simplified - would need debt data
-            st.metric(
-                "Debt-to-Income",
-                f"{debt_ratio:.1f}%",
-                "Healthy" if debt_ratio < 30 else "High"
-            )
-        
-        # Financial Health Score
-        st.markdown("### 🏥 Financial Health Analysis")
-        
-        health_scores = {
-            "Savings": min(100, savings_rate * 3),
-            "Investments": min(100, (portfolio.total_value / (user.income * 12)) * 100) if portfolio else 0,
-            "Emergency Fund": min(100, (emergency_months / 6) * 100),
-            "Insurance": 100 if user.has_insurance else 30,
-            "Debt Management": max(0, 100 - debt_ratio * 2)
-        }
-        
-        fig = go.Figure(data=[
-            go.Bar(
-                x=list(health_scores.keys()),
-                y=list(health_scores.values()),
-                marker_color=['green' if v >= 70 else 'orange' if v >= 40 else 'red' 
-                             for v in health_scores.values()]
-            )
-        ])
-        fig.update_layout(
-            title="Financial Health Scores",
-            yaxis_title="Score (0-100)",
-            showlegend=False,
-            height=400
-        )
-        st.plotly_chart(fig, use_container_width=True)
-        
-        overall_health = sum(health_scores.values()) / len(health_scores)
-        if overall_health >= 70:
-            st.success(f"🎉 Excellent Financial Health! Score: {overall_health:.0f}/100")
-        elif overall_health >= 50:
-            st.warning(f"⚠️ Good Financial Health. Room for improvement. Score: {overall_health:.0f}/100")
-        else:
-            st.error(f"🚨 Financial Health Needs Attention! Score: {overall_health:.0f}/100")
-        
-        # Recommendations
-        st.markdown("### 💡 Personalized Recommendations")
-        
-        recommendations = []
-        
-        if savings_rate < 20:
-            recommendations.append({
-                "priority": "High",
-                "action": "Increase savings rate to at least 20%",
-                "how": "Review and cut unnecessary expenses, automate savings"
-            })
-        
-        if emergency_months < 6:
-            recommendations.append({
-                "priority": "High",
-                "action": f"Build emergency fund to 6 months (need ₹{(6-emergency_months)*user.expenses:,.0f} more)",
-                "how": "Open high-yield savings account, set up automatic transfer"
-            })
-        
-        if not user.has_insurance:
-            recommendations.append({
-                "priority": "Critical",
-                "action": "Get adequate insurance coverage",
-                "how": f"Term insurance: ₹{user.income*12*10:,.0f}, Health insurance: ₹5-10 lakhs"
-            })
-        
-        if portfolio and portfolio.ppf == 0:
-            recommendations.append({
-                "priority": "Medium",
-                "action": "Start PPF account for tax-free returns",
-                "how": "Invest up to ₹1.5 lakhs annually for Section 80C benefit"
-            })
-        
-        for rec in recommendations[:3]:  # Show top 3
-            if rec["priority"] == "Critical":
-                st.error(f"🚨 **{rec['priority']}**: {rec['action']}")
-            elif rec["priority"] == "High":
-                st.warning(f"⚠️ **{rec['priority']}**: {rec['action']}")
-            else:
-                st.info(f"ℹ️ **{rec['priority']}**: {rec['action']}")
-            st.caption(f"How: {rec['how']}")
-    
-    def render_ai_chat(self):
-        """Render AI Advisor Chat Interface"""
-        st.markdown("## 💬 AI Financial Advisor Chat")
-        
-        if not st.session_state.api_key:
-            st.warning("Please enter your Gemini API key in Settings first!")
-            return
-        
-        if not st.session_state.gemini_advisor:
-            st.session_state.gemini_advisor = GeminiFinanceAdvisor(st.session_state.api_key)
-        
-        # Create a fixed layout with columns
-        chat_col, context_col = st.columns([4, 1])
-        
-        with context_col:
-            st.markdown("### Context")
-            portfolio_value = f"₹{st.session_state.portfolio.total_value:,.0f}" if st.session_state.portfolio else "N/A"
-            st.info(f"""
-            **Profile Loaded:**
-            - Risk: {st.session_state.user.risk_profile if st.session_state.user else 'N/A'}
-            - Goals: {len(st.session_state.user.financial_goals) if st.session_state.user else 0}
-            - Portfolio: {portfolio_value}
-            """)
-        
-        with chat_col:
-            # Quick action buttons
-            st.markdown("### Quick Actions")
-            quick_actions = [
-                "📊 Analyze my portfolio",
-                "💰 Tax saving suggestions",
-                "🏠 Home loan planning",
-                "👶 Child education planning",
-                "🎯 Retirement planning",
-                "📈 Best investments this month",
-                "🛡️ Insurance recommendations",
-                "💎 Should I invest in gold?"
-            ]
-            
-            # Create 2 rows of 4 buttons each
-            for row in range(2):
-                cols = st.columns(4)
-                for col_idx in range(4):
-                    action_idx = row * 4 + col_idx
-                    if action_idx < len(quick_actions):
-                        button_key = f"quick_action_{action_idx}_{quick_actions[action_idx][:10]}"
-                        if cols[col_idx].button(quick_actions[action_idx], use_container_width=True, key=button_key):
-                            st.session_state.chat_history.append({
-                                "role": "user",
-                                "content": quick_actions[action_idx]
-                            })
-                            
-                            with st.spinner("🤔 Thinking..."):
-                                response = st.session_state.gemini_advisor.get_advice(
-                                    quick_actions[action_idx],
-                                    st.session_state.user,
-                                    st.session_state.portfolio
-                                )
-                            
-                            st.session_state.chat_history.append({
-                                "role": "assistant",
-                                "content": response
-                            })
-                            st.rerun()
-            
-            # Chat history in a container with fixed height
-            st.markdown("### Conversation")
-            
-            # Create a container for chat history with fixed height
-            chat_container = st.container(height=300)
-            with chat_container:
-                if st.session_state.chat_history:
-                    for message in st.session_state.chat_history:
-                        if message["role"] == "user":
-                            st.markdown(f"**🧑 You:** {message['content']}")
-                        else:
-                            st.markdown(f"**🤖 Advisor:** {message['content']}")
-                        st.markdown("---")
-                else:
-                    st.info("Start a conversation by asking a question or clicking a quick action button above!")
-            
-            # Input area at the bottom
-            st.markdown("### Ask your financial question...")
-            with st.form("chat_input", clear_on_submit=True):
-                user_input = st.text_area(
-                    "Type your question here:",
-                    placeholder="E.g., How should I invest ₹50,000 for my child's education in 10 years?",
-                    height=100,
-                    label_visibility="collapsed"
-                )
-                
-                col1, col2, col3 = st.columns([1, 1, 4])
-                with col1:
-                    submitted = st.form_submit_button("Send 📤", use_container_width=True, type="primary")
-                with col2:
-                    if st.form_submit_button("Clear Chat 🗑️", use_container_width=True):
-                        st.session_state.chat_history = []
-                        st.rerun()
-                
-                if submitted and user_input:
-                    st.session_state.chat_history.append({
-                        "role": "user",
-                        "content": user_input
-                    })
-                    
-                    with st.spinner("🤖 AI is analyzing..."):
-                        response = st.session_state.gemini_advisor.get_advice(
-                            user_input,
-                            st.session_state.user,
-                            st.session_state.portfolio
-                        )
-                    
-                    st.session_state.chat_history.append({
-                        "role": "assistant",
-                        "content": response
-                    })
-                    st.rerun()
-    
-    def render_portfolio(self):
-        """Render Portfolio Optimizer"""
-        st.markdown("## 📊 Portfolio Optimizer")
-        
-        if not st.session_state.portfolio:
-            st.warning("Please set up your portfolio in Settings first!")
-            return
-        
-        optimizer = PortfolioOptimizer()
-        
-        # Portfolio Overview
-        col1, col2 = st.columns([2, 1])
-        
-        with col1:
-            st.markdown("### Current Portfolio Allocation")
-            
-            portfolio = st.session_state.portfolio
-            
-            # Pie chart
-            labels = []
-            values = []
-            
-            if sum(portfolio.stocks.values()) > 0:
-                labels.append("Stocks")
-                values.append(sum(portfolio.stocks.values()))
-            if sum(portfolio.mutual_funds.values()) > 0:
-                labels.append("Mutual Funds")
-                values.append(sum(portfolio.mutual_funds.values()))
-            if portfolio.elss > 0:
-                labels.append("ELSS (Tax Saving)")
-                values.append(portfolio.elss)
-            if portfolio.fixed_deposits > 0:
-                labels.append("Fixed Deposits")
-                values.append(portfolio.fixed_deposits)
-            if portfolio.ppf > 0:
-                labels.append("PPF")
-                values.append(portfolio.ppf)
-            if portfolio.nps > 0:
-                labels.append("NPS")
-                values.append(portfolio.nps)
-            if portfolio.gold > 0:
-                labels.append("Gold")
-                values.append(portfolio.gold)
-            if portfolio.cash > 0:
-                labels.append("Cash")
-                values.append(portfolio.cash)
-            
-            fig = go.Figure(data=[go.Pie(labels=labels, values=values, hole=.3)])
-            fig.update_layout(height=400)
-            st.plotly_chart(fig, use_container_width=True)
-        
-        with col2:
-            st.markdown("### Portfolio Metrics")
-            
-            # Calculate metrics
-            equity_allocation = (sum(portfolio.stocks.values()) + 
-                               sum(portfolio.mutual_funds.values()) + 
-                               portfolio.elss) / portfolio.total_value * 100
-            debt_allocation = (portfolio.fixed_deposits + portfolio.ppf + portfolio.nps) / portfolio.total_value * 100
-            
-            st.metric("Total Value", f"₹{portfolio.total_value:,.0f}")
-            st.metric("Equity %", f"{equity_allocation:.1f}%")
-            st.metric("Debt %", f"{debt_allocation:.1f}%")
-            st.metric("Liquidity", f"₹{portfolio.cash:,.0f}")
-        
-        # Optimization Section
-        st.markdown("### 🎯 Portfolio Optimization")
-        
-        with st.form("optimize_portfolio"):
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                selected_stocks = st.multiselect(
-                    "Select Stocks to Optimize",
-                    list(Config.INDIAN_STOCKS.keys()),
-                    default=list(Config.INDIAN_STOCKS.keys())[:5]
-                )
-            
-            with col2:
-                risk_tolerance = st.selectbox(
-                    "Risk Tolerance",
-                    ["Conservative", "Moderate", "Aggressive"],
-                    index=1
-                )
-            
-            with col3:
-                investment_amount = st.number_input(
-                    "Investment Amount (₹)",
-                    min_value=10000,
-                    value=100000,
-                    step=10000
-                )
-            
-            optimize_btn = st.form_submit_button("🚀 Optimize Portfolio", use_container_width=True)
-            
-            if optimize_btn and selected_stocks:
-                with st.spinner("Optimizing portfolio..."):
-                    stock_symbols = [Config.INDIAN_STOCKS[s] for s in selected_stocks]
-                    result = optimizer.optimize_portfolio(stock_symbols, risk_tolerance)
-                    
-                    if result["success"]:
-                        st.success("✅ Optimization Complete!")
-                        
-                        # Display results
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("Expected Return", f"{result['expected_return']:.2f}%")
-                        with col2:
-                            st.metric("Risk (Std Dev)", f"{result['risk']:.2f}%")
-                        with col3:
-                            st.metric("Sharpe Ratio", f"{result['sharpe_ratio']:.2f}")
-                        
-                        # Allocation table
-                        st.markdown("#### Recommended Allocation")
-                        allocation_df = pd.DataFrame([
-                            {
-                                "Stock": stock,
-                                "Allocation %": f"{weight*100:.1f}%",
-                                "Amount (₹)": f"{investment_amount * weight:,.0f}"
-                            }
-                            for stock, weight in result['weights'].items()
-                            if weight > 0.01
-                        ])
-                        st.dataframe(allocation_df, use_container_width=True)
-                    else:
-                        st.error(f"Optimization failed: {result.get('error', 'Unknown error')}")
-    
-    def render_gamification(self):
-        """Render Achievements & Rewards Page"""
-        st.markdown("## 🎮 Achievements & Rewards")
-        
-        if not st.session_state.user:
-            st.warning("Please complete your profile in Settings first to start earning achievements!")
-            return
-        
-        engine = GamificationEngine()
-        user = st.session_state.user
-        
-        # Initialize empty portfolio if none exists
-        if not st.session_state.portfolio:
-            st.session_state.portfolio = Portfolio(
-                user_id=user.user_id, stocks={}, mutual_funds={}, 
-                fixed_deposits=0, ppf=0, nps=0, gold=0, 
-                real_estate=0, crypto=0, cash=0, elss=0
-            )
-        
-        portfolio = st.session_state.portfolio
-        
-        # Check for new achievements
-        new_achievements = engine.check_achievements(user, portfolio)
-        if new_achievements:
-            st.balloons()
-            for achievement in new_achievements:
-                st.success(f"🎉 New Achievement Unlocked: {achievement['badge']} **{achievement['name']}** (+{achievement['points']} pts)")
-        
-        # Header with level and score
-        col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
-        
-        level_name, level_emoji, progress = engine.get_wealth_level(user.wealth_score)
-        
-        with col1:
-            st.metric("Wealth Score", f"{user.wealth_score} pts", f"{level_emoji}")
-        with col2:
-            st.metric("Current Level", level_name, f"Progress: {progress:.0f}%")
-        with col3:
-            st.metric("Achievements", f"{len(user.badges)}/{len(engine.challenges)}", 
-                     f"{len(user.badges)/len(engine.challenges)*100:.0f}% Complete")
-        with col4:
-            next_level_points = 0
-            for threshold in [100, 500, 1000, 2000, 5000, 10000, 20000]:
-                if user.wealth_score < threshold:
-                    next_level_points = threshold - user.wealth_score
-                    break
-            st.metric("To Next Level", f"{next_level_points} pts", "Keep going!")
-        
-        # Level Progress Bar
-        st.progress(progress / 100)
-        
-        # Tabs for different sections - REMOVED LEADERBOARD
-        tab1, tab2, tab3, tab4 = st.tabs([
-            "🏆 Achievements", 
-            "🎯 Daily Challenges", 
-            "🎁 Rewards",
-            "📈 Progress Tracker"
-        ])
-        
-        with tab1:
-            st.markdown("### 🏆 Achievement Categories")
-            st.info("Complete tasks to unlock achievements and earn points! Each achievement has specific requirements.")
-            
-            # Achievement Categories with better organization
-            categories = {}
-            for ach_id, ach in engine.challenges.items():
-                category = ach.get("category", "General")
-                if category not in categories:
-                    categories[category] = []
-                categories[category].append((ach_id, ach))
-            
-            # Display achievements by category with progress indicators
-            for category, achievements in categories.items():
-                with st.expander(f"**{category} Achievements** ({sum(1 for a in achievements if a[0] in user.badges)}/{len(achievements)} completed)", expanded=True):
-                    cols = st.columns(3)
-                    for idx, (ach_id, achievement) in enumerate(achievements):
-                        with cols[idx % 3]:
-                            is_earned = ach_id in user.badges
-                            
-                            # Calculate progress for specific achievements
-                            progress_text = ""
-                            progress_percent = 0
-                            
-                            if not is_earned:
-                                if ach_id == "first_investment" and portfolio:
-                                    progress_percent = 100 if portfolio.total_value > 0 else 0
-                                    progress_text = "Ready!" if progress_percent == 100 else "Add investments"
-                                
-                                elif ach_id == "emergency_fund" and portfolio:
-                                    emergency_funds = portfolio.cash + portfolio.fixed_deposits
-                                    months = emergency_funds / user.expenses if user.expenses > 0 else 0
-                                    progress_percent = min(100, (months / 3) * 100)
-                                    progress_text = f"{months:.1f}/3 months"
-                                
-                                elif ach_id == "emergency_master" and portfolio:
-                                    emergency_funds = portfolio.cash + portfolio.fixed_deposits
-                                    months = emergency_funds / user.expenses if user.expenses > 0 else 0
-                                    progress_percent = min(100, (months / 6) * 100)
-                                    progress_text = f"{months:.1f}/6 months"
-                                
-                                elif ach_id == "diversifier" and portfolio:
-                                    stats = engine.calculate_user_stats(user, portfolio)
-                                    progress_percent = min(100, (stats['asset_classes'] / 5) * 100)
-                                    progress_text = f"{stats['asset_classes']}/5 classes"
-                                
-                                elif ach_id == "equity_investor" and portfolio:
-                                    equity_value = sum(portfolio.stocks.values()) + sum(portfolio.mutual_funds.values())
-                                    progress_percent = min(100, (equity_value / 100000) * 100)
-                                    progress_text = f"₹{equity_value:,.0f}/₹1,00,000"
-                                
-                                elif ach_id == "tax_saver" and portfolio:
-                                    tax_savings = portfolio.ppf + portfolio.elss
-                                    progress_percent = min(100, (tax_savings / 150000) * 100)
-                                    progress_text = f"₹{tax_savings:,.0f}/₹1,50,000"
-                            
-                            # Achievement card with progress
-                            if is_earned:
-                                st.success(f"{achievement['badge']} **{achievement['name']}**")
-                                st.caption(f"✅ Completed • +{achievement['points']} pts")
-                            else:
-                                st.info(f"🔒 **{achievement['name']}**")
-                                st.caption(achievement['description'])
-                                if progress_text:
-                                    st.progress(progress_percent / 100)
-                                    st.caption(f"Progress: {progress_text}")
-                                st.caption(f"Reward: {achievement['points']} pts")
-        
-        with tab2:
-            st.markdown("### 🎯 Daily & Weekly Challenges")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("#### 📅 Today's Challenge")
-                daily_challenge = engine.get_daily_challenge()
-                
-                st.info(f"""
-                **Task:** {daily_challenge['task']}
-                
-                **Reward:** {daily_challenge['points']} points
-                
-                Complete daily challenges to maintain your streak!
-                """)
-                
-                if st.button("✅ Mark as Complete", use_container_width=True, key="daily_challenge_complete"):
-                    user.wealth_score += daily_challenge['points']
-                    st.success(f"Great job! +{daily_challenge['points']} points earned!")
-                    st.balloons()
-                    st.rerun()
-            
-            with col2:
-                st.markdown("#### 🔥 Your Streaks")
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    st.metric("Current Streak", "7 days", "🔥")
-                    st.metric("Longest Streak", "14 days", "⭐")
-                with col_b:
-                    st.metric("This Week", "5/7 days", "📅")
-                    st.metric("Total Active", "45 days", "💪")
-            
-            # Weekly Challenges
-            st.markdown("#### 📅 Weekly Challenges")
-            
-            weekly_challenges = [
-                {"task": "Complete 5 daily challenges", "points": 50, "progress": 3, "total": 5},
-                {"task": "Increase portfolio value by 2%", "points": 100, "progress": 1.2, "total": 2},
-                {"task": "Ask AI advisor 3 questions", "points": 30, "progress": len(st.session_state.chat_history) // 2, "total": 3},
-                {"task": "Review and update goals", "points": 40, "progress": 0, "total": 1}
-            ]
-            
-            for challenge in weekly_challenges:
-                col1, col2 = st.columns([4, 1])
-                with col1:
-                    st.markdown(f"**{challenge['task']}**")
-                    progress_pct = min(100, (challenge['progress'] / challenge['total']) * 100)
-                    st.progress(progress_pct / 100)
-                    st.caption(f"Progress: {challenge['progress']}/{challenge['total']}")
-                with col2:
-                    if progress_pct >= 100:
-                        st.success(f"✅ +{challenge['points']}")
-                    else:
-                        st.info(f"{challenge['points']} pts")
-        
-        with tab3:
-            st.markdown("### 🎁 Rewards & Unlocks")
-            st.info("Earn points to unlock premium features and rewards!")
-            
-            rewards = engine.get_unlocked_rewards(user.wealth_score)
-            
-            # Split rewards into unlocked and locked
-            unlocked_rewards = [r for r in rewards if r['unlocked']]
-            locked_rewards = [r for r in rewards if not r['unlocked']]
-            
-            if unlocked_rewards:
-                st.markdown("#### ✅ Unlocked Rewards")
-                cols = st.columns(3)
-                for idx, reward in enumerate(unlocked_rewards):
-                    with cols[idx % 3]:
-                        st.success(f"{reward['icon']} **{reward['reward']}**")
-                        st.caption(f"Unlocked at {reward['threshold']} pts")
-            
-            if locked_rewards:
-                st.markdown("#### 🔒 Upcoming Rewards")
-                for reward in locked_rewards[:3]:  # Show next 3 rewards
-                    col1, col2, col3 = st.columns([1, 3, 1])
-                    with col1:
-                        st.markdown(f"### 🔒")
-                    with col2:
-                        st.markdown(f"**{reward['reward']}**")
-                        points_needed = reward['threshold'] - user.wealth_score
-                        st.caption(f"Need {points_needed} more points")
-                        st.progress(min(100, user.wealth_score / reward['threshold'] * 100) / 100)
-                    with col3:
-                        st.info(f"{reward['threshold']} pts")
-            
-            # Special Offers
-            st.markdown("#### 💎 Bonus Opportunities")
-            col1, col2 = st.columns(2)
-            with col1:
-                st.info("""
-                **🎯 Weekly Bonus**
-                Complete all weekly challenges
-                Reward: +200 bonus points
-                """)
-            with col2:
-                st.info("""
-                **📈 Growth Bonus**
-                Grow portfolio by 5% this month
-                Reward: +500 bonus points
-                """)
-        
-        with tab4:
-            st.markdown("### 📈 Your Progress Overview")
-            
-            # Progress metrics
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # Score progression chart
-                st.markdown("#### 📊 Score Progress")
-                dates = pd.date_range(end=datetime.now(), periods=30, freq='D')
-                scores = [max(0, user.wealth_score - (30-i)*20 + random.randint(-10, 30)) for i in range(30)]
-                
-                fig = go.Figure(data=[
-                    go.Scatter(x=dates, y=scores, mode='lines+markers',
-                              line=dict(color='#6C63FF', width=3),
-                              marker=dict(size=5),
-                              fill='tozeroy',
-                              fillcolor='rgba(108, 99, 255, 0.2)')
-                ])
-                fig.update_layout(
-                    title="Last 30 Days",
-                    xaxis_title="Date",
-                    yaxis_title="Score",
-                    height=300,
-                    showlegend=False
-                )
-                st.plotly_chart(fig, use_container_width=True)
-            
-            with col2:
-                # Category completion
-                st.markdown("#### 🏆 Category Progress")
-                categories_data = []
-                for category in ["Beginner", "Savings", "Investment", "Tax", "Goals"]:
-                    category_achievements = [a for a_id, a in engine.challenges.items() 
-                                           if a.get("category") == category]
-                    completed = sum(1 for a_id, a in engine.challenges.items() 
-                                  if a.get("category") == category and a_id in user.badges)
-                    total = len(category_achievements)
-                    percentage = (completed / total * 100) if total > 0 else 0
-                    categories_data.append({
-                        "Category": category,
-                        "Completed": percentage
-                    })
-                
-                df = pd.DataFrame(categories_data)
-                fig = go.Figure(data=[
-                    go.Bar(x=df['Category'], y=df['Completed'],
-                          marker_color=['green' if v >= 60 else 'orange' if v >= 30 else 'red' 
-                                       for v in df['Completed']])
-                ])
-                fig.update_layout(
-                    title="Completion by Category (%)",
-                    yaxis_title="Completion %",
-                    height=300,
-                    showlegend=False
-                )
-                st.plotly_chart(fig, use_container_width=True)
-            
-            # Key Statistics
-            st.markdown("#### 📊 Your Statistics")
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                avg_daily_points = user.wealth_score / max(1, (datetime.now() - user.created_at).days)
-                st.metric("Daily Average", f"{avg_daily_points:.1f} pts")
-            
-            with col2:
-                completion_rate = (len(user.badges) / len(engine.challenges)) * 100
-                st.metric("Completion", f"{completion_rate:.0f}%")
-            
-            with col3:
-                total_possible = sum(a["points"] for a in engine.challenges.values())
-                st.metric("Total Possible", f"{total_possible} pts")
-            
-            with col4:
-                efficiency = (user.wealth_score / total_possible * 100) if total_possible > 0 else 0
-                st.metric("Efficiency", f"{efficiency:.0f}%")
-                    
-    def render_settings(self):
-        """Render Settings Page"""
-        st.markdown("## ⚙️ Settings")
-        
-        tab1, tab2, tab3 = st.tabs(["Profile Setup", "Portfolio Setup", "API Configuration"])
-        
-        with tab1:
-            st.markdown("### 👤 User Profile")
-            
-            with st.form("user_profile"):
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    name = st.text_input("Name", value="Demo User")
-                    age = st.number_input("Age", min_value=18, max_value=100, value=30)
-                    income = st.number_input("Monthly Income (₹)", min_value=10000, value=75000, step=5000)
-                    expenses = st.number_input("Monthly Expenses (₹)", min_value=5000, value=45000, step=5000)
-                    family_size = st.number_input("Family Size", min_value=1, max_value=10, value=3)
-                
-                with col2:
-                    city_tier = st.selectbox("City Tier", [1, 2, 3], index=0)
-                    investment_experience = st.selectbox(
-                        "Investment Experience",
-                        ["Beginner", "Intermediate", "Advanced"],
-                        index=1
-                    )
-                    has_insurance = st.checkbox("Have Life Insurance?", value=True)
-                    has_emergency_fund = st.checkbox("Have Emergency Fund?", value=False)
-                
-                financial_goals = st.multiselect(
-                    "Financial Goals",
-                    Config.FINANCIAL_GOALS,
-                    default=["Retirement Planning", "Children's Education"]
-                )
-                
-                # Risk Profile Questions
-                st.markdown("#### Risk Assessment")
-                profiler = RiskProfiler()
-                answers = []
-                
-                for q in profiler.questions:
-                    answer = st.radio(
-                        q["question"],
-                        options=list(q["options"].keys()),
-                        horizontal=True
-                    )
-                    answers.append(q["options"][answer])
-                
-                save_profile = st.form_submit_button("💾 Save Profile", use_container_width=True)
-                
-                if save_profile:
-                    risk_profile = profiler.calculate_risk_profile(answers)
-                    
-                    st.session_state.user = User(
-                        user_id=hashlib.md5(name.encode()).hexdigest()[:8],
-                        name=name,
-                        age=age,
-                        income=income,
-                        expenses=expenses,
-                        risk_profile=risk_profile,
-                        financial_goals=financial_goals,
-                        investment_experience=investment_experience,
-                        family_size=family_size,
-                        city_tier=city_tier,
-                        has_insurance=has_insurance,
-                        has_emergency_fund=has_emergency_fund
-                    )
-                    
-                    st.success(f"✅ Profile saved! Risk Profile: {risk_profile}")
-        
-        with tab2:
-            st.markdown("### 💼 Portfolio Setup")
-            
-            with st.form("portfolio_setup"):
-                st.markdown("#### Equity Investments")
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    stock_investment = st.number_input(
-                        "Direct Stock Investment (₹)",
-                        min_value=0,
-                        value=200000,
-                        step=10000
-                    )
-                
-                with col2:
-                    mf_investment = st.number_input(
-                        "Mutual Fund Investment (₹)",
-                        min_value=0,
-                        value=300000,
-                        step=10000
-                    )
-                
-                st.markdown("#### Fixed Income & Tax Saving")
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    fd_investment = st.number_input(
-                        "Fixed Deposits (₹)",
-                        min_value=0,
-                        value=100000,
-                        step=10000
-                    )
-                    ppf_investment = st.number_input(
-                        "PPF Investment (₹)",
-                        min_value=0,
-                        value=150000,
-                        step=10000
-                    )
-                    elss_investment = st.number_input(
-                        "ELSS (Tax Saving MF) (₹)",
-                        min_value=0,
-                        value=50000,
-                        step=10000
-                    )
-                
-                with col2:
-                    nps_investment = st.number_input(
-                        "NPS Investment (₹)",
-                        min_value=0,
-                        value=50000,
-                        step=10000
-                    )
-                    gold_investment = st.number_input(
-                        "Gold Investment (₹)",
-                        min_value=0,
-                        value=50000,
-                        step=10000
-                    )
-                
-                st.markdown("#### Others")
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    real_estate = st.number_input(
-                        "Real Estate (₹)",
-                        min_value=0,
-                        value=0,
-                        step=100000
-                    )
-                
-                with col2:
-                    crypto = st.number_input(
-                        "Cryptocurrency (₹)",
-                        min_value=0,
-                        value=0,
-                        step=10000
-                    )
-                
-                cash = st.number_input(
-                    "Cash/Savings Account (₹)",
-                    min_value=0,
-                    value=100000,
-                    step=10000
-                )
-                
-                save_portfolio = st.form_submit_button("💾 Save Portfolio", use_container_width=True)
-                
-                if save_portfolio:
-                    # Simplified stock distribution
-                    stocks = {}
-                    if stock_investment > 0:
-                        top_stocks = list(Config.INDIAN_STOCKS.keys())[:5]
-                        for stock in top_stocks:
-                            stocks[stock] = stock_investment / len(top_stocks)
-                    
-                    # Simplified MF distribution
-                    mutual_funds = {}
-                    if mf_investment > 0:
-                        categories = ["Large Cap", "Mid Cap", "ELSS"]
-                        for category in categories:
-                            mutual_funds[category] = mf_investment / len(categories)
-                    
-                    portfolio = Portfolio(
-                        user_id=st.session_state.user.user_id if st.session_state.user else "demo",
-                        stocks=stocks,
-                        mutual_funds=mutual_funds,
-                        fixed_deposits=fd_investment,
-                        ppf=ppf_investment,
-                        nps=nps_investment,
-                        elss=elss_investment,
-                        gold=gold_investment,
-                        real_estate=real_estate,
-                        crypto=crypto,
-                        cash=cash
-                    )
-                    portfolio.calculate_total()
-                    
-                    st.session_state.portfolio = portfolio
-                    st.success(f"✅ Portfolio saved! Total Value: ₹{portfolio.total_value:,.0f}")
-        
-        with tab3:
-            st.markdown("### 🔑 API Configuration")
-            
-            api_key = st.text_input(
-                "Gemini API Key",
-                value=st.session_state.api_key,
-                type="password",
-                placeholder="Enter your Gemini API key"
-            )
-            
-            st.info("""
-            To get your Gemini API key:
-            1. Visit [Google AI Studio](https://makersuite.google.com/app/apikey)
-            2. Sign in with your Google account
-            3. Click "Create API Key"
-            4. Copy and paste the key above
-            """)
-            
-            if st.button("💾 Save API Key", use_container_width=True, key="save_api_key"):
-                if api_key:
-                    st.session_state.api_key = api_key
-                    st.session_state.gemini_advisor = GeminiFinanceAdvisor(api_key)
-                    st.success("✅ API Key saved successfully!")
-                else:
-                    st.error("Please enter a valid API key")
-    
     def run(self):
         """Run the application"""
-        self.render_header()
-        self.render_sidebar()
+        render_header_page(self)
+        render_sidebar_page(self)
         
         # Route to appropriate page
         if st.session_state.current_page == "Dashboard":
-            self.render_dashboard()
+            render_dashboard_page(self)
         elif st.session_state.current_page == "AI Chat":
-            self.render_ai_chat()
+            render_ai_chat_page(self)
+        elif st.session_state.current_page == "Smart Features":
+            render_smart_features_page(self)
         elif st.session_state.current_page == "Portfolio":
-            self.render_portfolio()
+            render_portfolio_page(self)
         elif st.session_state.current_page == "Gamification":
-            self.render_gamification()
+            render_gamification_page(self)
         elif st.session_state.current_page == "Settings":
-            self.render_settings()
+            render_settings_page(self)
         else:
             st.info(f"Page '{st.session_state.current_page}' is under development 🚧")
 
