@@ -110,3 +110,59 @@ Columns:
 - Offline chatbot mode works without any API key.
 - For Gemini/OpenRouter providers, valid API keys are required.
 - This project is suitable for AI/ML academic demos with practical fintech use cases.
+
+## HTML/CSS/JS + FastAPI Mode (Vercel-style architecture)
+
+This repo now also includes:
+
+- `api/main.py` (FastAPI backend)
+- `web/index.html`, `web/style.css`, `web/app.js` (plain frontend)
+
+### Run API backend
+
+```powershell
+python -m uvicorn api.main:app --reload --port 8000
+```
+
+### Run static frontend
+
+Open `web/index.html` directly in browser, or serve with a static server.
+
+Example (Python):
+
+```powershell
+cd web
+python -m http.server 5500
+```
+
+Then open:
+- Frontend: `http://127.0.0.1:5500`
+- API docs: `http://127.0.0.1:8000/docs`
+
+## Vercel Deployment (HTML/CSS/JS + FastAPI)
+
+This project includes `vercel.json` and is ready for Vercel using:
+- Static frontend from `web/`
+- Python serverless API from `api/main.py`
+
+### Steps
+
+1. Push latest code to GitHub.
+2. In Vercel, import your GitHub repository.
+3. Use default settings (no special build command required).
+4. Deploy.
+
+### Routes after deployment
+
+- `/` -> web frontend
+- `/health` -> API health check
+- `/analyze` -> personalized analysis
+- `/chat` -> offline chat endpoint
+- `/expense/analyze-csv` -> CSV analysis
+- `/expense/predict` -> prediction endpoint
+
+### Quick check
+
+After deploy, open:
+- `https://<your-app>.vercel.app/`
+- `https://<your-app>.vercel.app/health` (should return status json)

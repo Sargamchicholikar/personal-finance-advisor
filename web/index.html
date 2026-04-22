@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Personal Finance Advisor</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>Personal Finance Advisor</h1>
+      <p class="muted">HTML/CSS/JS frontend + FastAPI backend</p>
+
+      <section class="card">
+        <h2>1) Personalized Analysis</h2>
+        <div class="grid">
+          <input id="income" type="number" placeholder="Monthly income" value="50000" />
+          <input id="expenses" type="number" placeholder="Monthly expenses" value="35000" />
+          <input id="savings" type="number" placeholder="Monthly savings" value="15000" />
+        </div>
+        <button id="analyzeBtn">Analyze</button>
+        <pre id="analysisOut"></pre>
+      </section>
+
+      <section class="card">
+        <h2>2) Expense Analyzer (CSV)</h2>
+        <input id="csvFile" type="file" accept=".csv" />
+        <button id="csvBtn">Analyze CSV</button>
+        <pre id="csvOut"></pre>
+      </section>
+
+      <section class="card">
+        <h2>3) Free Offline Chat</h2>
+        <textarea id="chatMsg" rows="3" placeholder="Ask basic finance question..."></textarea>
+        <button id="chatBtn">Ask</button>
+        <pre id="chatOut"></pre>
+      </section>
+    </main>
+    <script src="./app.js"></script>
+  </body>
+  </html>
