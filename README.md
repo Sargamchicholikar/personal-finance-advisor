@@ -152,6 +152,8 @@ This project includes `vercel.json` and is ready for Vercel using:
 3. Use default settings (no special build command required).
 4. Deploy.
 
+Note: Vercel API uses `api/requirements.txt` (minimal dependencies) to avoid Lambda bundle size limits.
+
 ### Routes after deployment
 
 - `/` -> web frontend
